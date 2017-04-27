@@ -1,0 +1,12 @@
+<% @keys.each do |i| %>
+  Key: <%= i.key %>, Secret: <%= i.secret %><br/>
+
+<% end %>
+
+<%= form_tag('') do %>
+    <%= hidden_field_tag :generate_new_key, 1 %>
+    <%= submit_tag 'Generate new key' %>
+<% end %>
+
+<%= link_to 'XML', lti_xml_path %>
+

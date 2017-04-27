@@ -1,0 +1,8 @@
+<%= form_tag("main/send_choosen_objects") do %>
+    <% @readings.each do |i| %>
+        <%= i[1] %>
+        <%= check_box_tag 'readings[]', i[0] %>
+    <% end %>
+    <%= hidden_field_tag :launch_presentation_return_url, @redirect_url %>
+    <%= submit_tag 'Save' %>
+<% end %>

@@ -1,0 +1,2 @@
+class LtiKey < ApplicationRecord
+end
