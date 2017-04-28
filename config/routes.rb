@@ -8,11 +8,12 @@ Rails.application.routes.draw do
 
   root 'main#index', via: :all
   post '/' => 'main#index'
-  post 'lti/register' => 'lti#register'
+  match 'lti/register' => 'lti#register', via: [:post, :get]
 
   post 'lti/add_content' => 'lti#add_content'
   get 'item/:id' => 'main#item'
   get 'endpoint' => 'main#endpoint'
 
+  get 'lti/oauth' => 'lti#oauth'
   post 'main/send_choosen_objects'
 end

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema.define(version: 20170426172806) do
+ActiveRecord::Schema.define(version: 20170427122203) do
 
   create_table "lti_keys", force: :cascade do |t|
     t.string   "key",        null: false
@@ -18,6 +18,13 @@ ActiveRecord::Schema.define(version: 20170426172806) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["key"], name: "index_lti_keys_on_key", unique: true
+  end
+
+  create_table "oauth_tokens", force: :cascade do |t|
+    t.string  "access_token",  null: false
+    t.string  "refresh_token", null: false
+    t.integer "user_id",       null: false
+    t.index ["user_id"], name: "index_oauth_tokens_on_user_id", unique: true
   end
 
   create_table "readings", force: :cascade do |t|
