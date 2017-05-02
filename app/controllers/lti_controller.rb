@@ -134,7 +134,13 @@ class LtiController < ApplicationController
         item_tool = create_external_tool OAUTH_BASE_URL, course_id, 'item_tool', 'item_tool_secret',
                                          access_token, additional_params = {
             url: launch_items_url = url_for(controller: :lti, action: :item, id: id) ,
-            name: "Item Tool #{rand 1000}"
+            name: "Item Tool #{rand 1000}",
+            tool_configuration: {
+              url: launch_items_url,
+              enabled: true,
+              message_type: 'ContentItemSelectionRequest'
+            },
+            #oauth_compliant: true
           }
       rescue EmptyAccessToken, RestClient::Unauthorized => e
         unless refresh_token.blank?
