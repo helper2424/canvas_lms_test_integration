@@ -4,7 +4,7 @@ class LtiController < ApplicationController
   before_action :cache_params
   before_action :authenticate_user!
 
-  skip_before_action :authenticate_user!, only: [:xml, :endpoint]
+  skip_before_action :authenticate_user!, only: [:xml, :endpoint, :add_content]
 
   class EmptyAccessToken < RuntimeError
   end
@@ -21,7 +21,6 @@ class LtiController < ApplicationController
 
     access_token, refresh_token = current_user.get_tokens
 
-    binding.pry
     remove_saved_params required_params
     session.delete :return_to_url
 
@@ -38,7 +37,8 @@ class LtiController < ApplicationController
         resource_selection: {
           enabled: true,
           url: url_for(:root)
-        }
+        },
+        name: 'EreservePlus'
       }
     rescue EmptyAccessToken, RestClient::Unauthorized => e
       unless refresh_token.blank?
@@ -60,23 +60,19 @@ class LtiController < ApplicationController
 
     url_params = {
       status: 'success', # or failure
-      tool_proxy_guid: 1
+      tool_proxy_guid: params[:ext_tool_consumer_instance_guid] #create_tool_result['id']
     }
     redirect_url = "#{lti_launch_url}?#{url_params.to_query}"
 
-    binding.pry
     redirect_to redirect_url
   end
 
   def add_content
-    binding.pry
-    @redirect_url = params['launch_presentation_return_url']
 
-    if @redirect_url.blank?
-      passed_params = cookies['passed_params']
-      @redirect_url = (JSON.parse passed_params rescue {})['launch_presentation_return_url']
-      cookies['passed_params'] = nil
-    end
+    # handle situation, when user has not authorized at our application
+    # handke situation when user not authorized in canvas
+    authenticate_user!
+    @params_inner = params.select { |k, v| not [:controller, :action].include? k.to_sym }
     @readings = [[1, 'First'], [2, 'Second'], [3, 'Third']]
   end
 
@@ -96,10 +92,91 @@ class LtiController < ApplicationController
     id = SecureRandom.uuid
 
     Reading.create uid: id, readings: params['readings'].to_json
-    url = url_for(controller: :lti, action: :item, id: id)
-    url_params = { return_type: 'iframe', url: url,
-                   title: 'Item test', width: '400', height: '200' }
-    redirect_url = "#{params['launch_presentation_return_url']}?#{url_params.to_query}"
+
+    tokens = current_user.oauth_token
+    access_token = tokens.access_token
+    refresh_token = tokens.refresh_token
+
+    course_id = 2 # Extract by youself
+
+    # begin
+    #   tool_list = get_external_tools_list OAUTH_BASE_URL, access_token, course_id
+    # rescue EmptyAccessToken, RestClient::Unauthorized => e
+    #   unless refresh_token.blank?
+    #     access_token = oauth_refresh_token refresh_token
+    #     if access_token.present?
+    #       tokens = current_user.oauth_token
+    #       tokens.access_token = access_token
+    #       tokens.save
+    #       retry
+    #     end
+    #   end
+    #
+    #   save_params_to_session params.keys - [:controller, :action]
+    #   session[:return_to_url] = request.original_url
+    #   oauth_start_auth
+    #   return
+    # end
+    #
+    # item_tool = nil
+    # tool_list.each do |i|
+    #   if i['consumer_key'] == 'item_tool'
+    #     item_tool = i
+    #     break
+    #   end
+    # end
+
+    item_tool = nil
+    launch_items_url = url_for(controller: :lti, action: :item, id: id)
+
+    unless item_tool
+      begin
+        item_tool = create_external_tool OAUTH_BASE_URL, course_id, 'item_tool', 'item_tool_secret',
+                                         access_token, additional_params = {
+            url: launch_items_url = url_for(controller: :lti, action: :item, id: id) ,
+            name: "Item Tool #{rand 1000}"
+          }
+      rescue EmptyAccessToken, RestClient::Unauthorized => e
+        unless refresh_token.blank?
+          access_token = oauth_refresh_token refresh_token
+          if access_token.present?
+            tokens = current_user.oauth_token
+            tokens.access_token = access_token
+            tokens.save
+            retry
+          end
+        end
+
+        save_params_to_session params.keys - [:controller, :action]
+        session[:return_to_url] = request.original_url
+        oauth_start_auth
+        return
+      end
+    end
+    #
+
+    begin
+      session_less = session_less_url_external_tool OAUTH_BASE_URL, access_token, course_id, item_tool['id']
+    rescue EmptyAccessToken, RestClient::Unauthorized => e
+      unless refresh_token.blank?
+        access_token = oauth_refresh_token refresh_token
+        if access_token.present?
+          tokens = current_user.oauth_token
+          tokens.access_token = access_token
+          tokens.save
+          retry
+        end
+      end
+
+      save_params_to_session params.keys - [:controller, :action]
+      session[:return_to_url] = request.original_url
+      oauth_start_auth
+      return
+    end
+
+    url_params = { return_type: 'iframe', url: session_less['url'],
+                   title: 'Item test' }
+    redirect_url = "#{params['content_item_return_url']}?#{url_params.to_query}"
 
     redirect_to redirect_url
   end
@@ -162,9 +239,24 @@ class LtiController < ApplicationController
       shared_secret: secret
     }.merge additional_params
 
-    binding.pry
     response = RestClient.post "#{base_url}/api/v1/courses/#{course_id}/external_tools", tool_params,
                                'Authorization' => " Bearer #{access_token}"
+    Oj.load response.body
+  end
+
+  def get_external_tools_list(base_url, access_token, course_id)
+    raise EmptyAccessToken.new if access_token.blank?
+
+    response = RestClient.get "#{base_url}/api/v1/courses/#{course_id}/external_tools",
+                              'Authorization' => " Bearer #{access_token}"
+    Oj.load response.body
+  end
+
+  def session_less_url_external_tool(base_url, access_token, course_id, id)
+    raise EmptyAccessToken.new if access_token.blank?
+
+    response = RestClient.get "#{base_url}/api/v1/courses/#{course_id}/external_tools/sessionless_launch?#{ {id: id}.to_query }",
+                              'Authorization' => " Bearer #{access_token}"
     Oj.load response.body
   end
 

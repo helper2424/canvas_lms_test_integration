@@ -11,9 +11,9 @@ Rails.application.routes.draw do
   match 'lti/register' => 'lti#register', via: [:post, :get]
 
   post 'lti/add_content' => 'lti#add_content'
-  get 'item/:id' => 'main#item'
+  post 'item/:id' => 'lti#item'
   get 'endpoint' => 'main#endpoint'
 
   get 'lti/oauth' => 'lti#oauth'
-  post 'main/send_choosen_objects'
+  post 'lti/send_choosen_objects'
 end

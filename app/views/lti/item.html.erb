@@ -1,4 +1,4 @@
-<% @readings.each do |i| %>
+<% (@readings || []).each do |i| %>
   Reading <%= i %><br/>
 <% end %>
 
