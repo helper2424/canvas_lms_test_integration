@@ -3,6 +3,9 @@ module Oauth
   OAUTH_KEY = 'XjhoGp0gbMV8ZR4IctiZvUCaN6AgPIr0E9Y6ZQSbBpsmKXwT6YmtBHM2K1Q3jFLf'
   OAUTH_BASE_URL = 'http://localhost:3000/'
 
+  class EmptyAccessToken < RuntimeError
+  end
+
   protected
 
   # return here from lms with code or error
@@ -86,5 +89,35 @@ module Oauth
 
   def remove_saved_params(params_list = [])
     params_list.each { |i| session.delete i }
+  end
+
+  def api_call_wrapper(access_token, refresh_token)
+    real_access_token = access_token
+    begin
+     yield real_access_token
+    rescue EmptyAccessToken, RestClient::Unauthorized => e
+      unless refresh_token.blank?
+        real_access_token = oauth_refresh_token refresh_token
+        if real_access_token.present?
+          tokens = current_user.oauth_token
+          tokens.access_token = real_access_token
+          tokens.save
+          retry
+        end
+      end
+
+      save_params_to_session params.keys - [:controller, :action]
+      session[:return_to_url] = request.original_url
+      oauth_start_auth
+      false
+    end
+
+    true
+  end
+
+  def oauth2_header(access_token)
+    raise EmptyAccessToken.new if access_token.blank?
+
+    { 'Authorization' => " Bearer #{access_token}" }
   end
 end

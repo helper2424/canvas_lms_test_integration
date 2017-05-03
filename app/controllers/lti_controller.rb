@@ -1,61 +1,56 @@
 class LtiController < ApplicationController
   include Oauth
 
-  before_action :cache_params
   before_action :authenticate_user!
 
-  skip_before_action :authenticate_user!, only: [:xml, :endpoint, :add_content]
+  skip_before_action :authenticate_user!, only: [:xml, :endpoint, :add_content, :item]
 
-  class EmptyAccessToken < RuntimeError
-  end
-
-  def xml
-    render xml: render_to_string(layout: false)
-  end
+  OAUTH1_KEY = 'item_tool'
+  OAUTH1_SECRET = 'item_tool_secret'
 
   def register
-    required_params = [:ext_api_domain, :launch_presentation_return_url]
+    begin
+      tc_profile = RestClient.get params['tc_profile_url']
+    rescue RestClient::ExceptionWithResponse => e
+      # Handle this
+    end
 
-    ext_domain = params[:ext_api_domain] || session[:ext_api_domain]
-    lti_launch_url = params[:launch_presentation_return_url] || session[:launch_presentation_return_url]
+    tool_proxy_services = Oj.load tc_profile
+    register_request = nil
 
-    access_token, refresh_token = current_user.get_tokens
+    tool_proxy_services['service_offered'].each do |i|
+      if i['format'].include?('application/vnd.ims.lti.v2.toolproxy+json') && i['action'].include?('POST')
+        register_request = i['endpoint']
+      end
+    end
 
-    remove_saved_params required_params
-    session.delete :return_to_url
 
     begin
-      create_tool_result = create_external_tool "http://#{ext_domain}", 2, 'some', 'some', access_token, {
-        editor_button: {
-          enabled: true,
-          icon_url: 'https://online.clickview.com.au/Assets/images/icons/cv-logo.png',
-          selection_width: 800,
-          selection_height: 494,
-          url: url_for(controller: :lti, action: :add_content),
-          message_type: 'ContentItemSelectionRequest'
-        },
-        resource_selection: {
-          enabled: true,
-          url: url_for(:root)
-        },
-        name: 'EreservePlus'
+      add_content_url = url_for(controller: :lti, action: :add_content)
+      content_body = { '@context' => add_content_url }.to_json
+      oauth_params = {
+        'realm' => '',
+        'oauth_version' => "1.0",
+        'oauth_nonce' => 'nonce',
+        'oauth_timestamp' => Time.now.to_i,
+        'oauth_consumer_key' => params['reg_key'],
+        'oauth_body_hash' => URI.encode_www_form_component(Digest::SHA1.base64digest(content_body)),
+        'oauth_signature_method' => "HMAC-SHA1"
       }
-    rescue EmptyAccessToken, RestClient::Unauthorized => e
-      unless refresh_token.blank?
-        access_token = oauth_refresh_token refresh_token
-        if access_token.present?
-          tokens = current_user.oauth_token
-          tokens.access_token = access_token
-          tokens.save
-          retry
-        end
 
-      end
+      signature = oauth1_signature('POST',
+                                   register_request,
+                                   oauth_params,
+                                   params['reg_password'])
 
-      save_params_to_session required_params
-      session[:return_to_url] = request.original_url
-      oauth_start_auth
-      return
+      oauth_params['oauth_signature'] = URI.encode_www_form_component signature
+      oauth_header = oauth_params.map { |k, v| "#{k} = \"#{v}\"" }.join ','
+
+      reg_result = RestClient.post register_request, content_body,
+                                   'Content-Type' => 'application/vnd.ims.lti.v2.toolproxy+json',
+                                   'Authorization' => "OAuth #{oauth_header}"
+    rescue RestClient::ExceptionWithResponse => e
+      # Handle this
     end
 
     url_params = {
@@ -68,27 +63,13 @@ class LtiController < ApplicationController
   end
 
   def add_content
-
-    # handle situation, when user has not authorized at our application
-    # handke situation when user not authorized in canvas
+    # check_lti_auth 'some'
     authenticate_user!
     @params_inner = params.select { |k, v| not [:controller, :action].include? k.to_sym }
     @readings = [[1, 'First'], [2, 'Second'], [3, 'Third']]
   end
 
   def send_choosen_objects
-    # id = SecureRandom.uuid
-    #
-    # Reading.create uid: id, readings: params['readings'].to_json
-    # endpoint_url = url_for(controller: :lti, action: :endpoint, format: :json)
-    #
-    # url_params = {return_type: 'oembed', url: id, endpoint: endpoint_url}
-    # redirect_url = "#{params['launch_presentation_return_url']}?#{url_params.to_query}"
-    #
-    # redirect_to redirect_url
-
-    # ===============================
-
     id = SecureRandom.uuid
 
     Reading.create uid: id, readings: params['readings'].to_json
@@ -99,121 +80,40 @@ class LtiController < ApplicationController
 
     course_id = 2 # Extract by youself
 
-    # begin
-    #   tool_list = get_external_tools_list OAUTH_BASE_URL, access_token, course_id
-    # rescue EmptyAccessToken, RestClient::Unauthorized => e
-    #   unless refresh_token.blank?
-    #     access_token = oauth_refresh_token refresh_token
-    #     if access_token.present?
-    #       tokens = current_user.oauth_token
-    #       tokens.access_token = access_token
-    #       tokens.save
-    #       retry
-    #     end
-    #   end
-    #
-    #   save_params_to_session params.keys - [:controller, :action]
-    #   session[:return_to_url] = request.original_url
-    #   oauth_start_auth
-    #   return
-    # end
-    #
-    # item_tool = nil
-    # tool_list.each do |i|
-    #   if i['consumer_key'] == 'item_tool'
-    #     item_tool = i
-    #     break
-    #   end
-    # end
-
     item_tool = nil
     launch_items_url = url_for(controller: :lti, action: :item, id: id)
 
     unless item_tool
-      begin
-        item_tool = create_external_tool OAUTH_BASE_URL, course_id, 'item_tool', 'item_tool_secret',
-                                         access_token, additional_params = {
-            url: launch_items_url = url_for(controller: :lti, action: :item, id: id) ,
-            name: "Item Tool #{rand 1000}",
-            tool_configuration: {
-              url: launch_items_url,
+      return unless api_call_wrapper(access_token, refresh_token) do |access_token_real|
+        item_tool = create_external_tool OAUTH_BASE_URL, course_id, OAUTH1_KEY, OAUTH1_SECRET,
+                                         access_token_real, additional_params = {
+            url: launch_items_url = url_for(controller: :lti, action: :item, id: id),
+            name: "Item Tool #{id}",
+            course_navigation: {
               enabled: true,
-              message_type: 'ContentItemSelectionRequest'
+              text: "Ereserve plus #{id}",
+              visibility: 'admins',
+              windowTarget: '_blank',
+              default: false
             },
-            #oauth_compliant: true
           }
-      rescue EmptyAccessToken, RestClient::Unauthorized => e
-        unless refresh_token.blank?
-          access_token = oauth_refresh_token refresh_token
-          if access_token.present?
-            tokens = current_user.oauth_token
-            tokens.access_token = access_token
-            tokens.save
-            retry
-          end
-        end
-
-        save_params_to_session params.keys - [:controller, :action]
-        session[:return_to_url] = request.original_url
-        oauth_start_auth
-        return
-      end
-    end
-    #
-
-    begin
-      session_less = session_less_url_external_tool OAUTH_BASE_URL, access_token, course_id, item_tool['id']
-    rescue EmptyAccessToken, RestClient::Unauthorized => e
-      unless refresh_token.blank?
-        access_token = oauth_refresh_token refresh_token
-        if access_token.present?
-          tokens = current_user.oauth_token
-          tokens.access_token = access_token
-          tokens.save
-          retry
-        end
       end
 
-      save_params_to_session params.keys - [:controller, :action]
-      session[:return_to_url] = request.original_url
-      oauth_start_auth
-      return
+      return unless api_call_wrapper(access_token, refresh_token) do |access_token_real|
+        delete_external_tool OAUTH_BASE_URL, item_tool['id'], course_id, access_token_real
+      end
     end
 
-    url_params = { return_type: 'iframe', url: session_less['url'],
+    launch_url = "/courses/#{course_id}/external_tools/#{item_tool['id']}?display=borderless"
+    url_params = { return_type: 'iframe', url: launch_url,
                    title: 'Item test' }
     redirect_url = "#{params['content_item_return_url']}?#{url_params.to_query}"
 
     redirect_to redirect_url
   end
 
-  def endpoint
-    # unless params[:url] == url_for(controller: :main, action: :item, id: id)
-    #   raise ActionController::RoutingError.new('Not Found')
-    # end
-
-    readings = Reading.find_by_uid params['url']
-    @readings = JSON.parse readings.readings rescue []
-
-    # self.formats = [:html]
-    #   html_rendered = render_to_string(:action => 'item')
-    # self.formats = [:json]
-
-    html_rendered = '<iframe id="eres_res_link_1685" src="/d2l/common/dialogs/quickLink/quickLink.d2l?ou=36555&amp;type=lti&amp;rcode=VUUAT-112994&amp;srcou=1" width="100%" frameborder="0" scrolling="no" onload="alert("test");" style="overflow: hidden; height: 98px;"></iframe>'
-    html_rendered.concat '<script type="text/javascript">window.alert("Hello World!");</script>'
-    html_rendered.concat '<div style="font-size: 30px; color: green; position: absolute; left:30px; top: 30px;">A lot text</div>'
-
-    response = {
-      type: 'rich',
-      version: '1.0',
-      html: html_rendered,
-      width: 333,
-      height: 444
-    }
-    render json: response
-  end
-
   def item
+    check_lti_auth OAUTH1_SECRET
     readings = Reading.find_by_uid params['id']
     @readings = JSON.parse readings.readings rescue []
   end
@@ -225,20 +125,7 @@ class LtiController < ApplicationController
 
   protected
 
-  def cache_params
-    keys = ["oauth_consumer_key", "oauth_signature_method", "oauth_timestamp", "oauth_nonce", "oauth_version", "context_id", "context_label", "context_title", "custom_canvas_api_domain", "custom_canvas_course_id", "custom_canvas_enrollment_state", "custom_canvas_user_id", "custom_canvas_user_login_id", "custom_canvas_workflow_state", "ext_content_intended_use", "ext_content_return_types", "ext_content_return_url", "ext_roles", "launch_presentation_document_target", "launch_presentation_height", "launch_presentation_locale", "launch_presentation_return_url", "launch_presentation_width", "lis_person_contact_email_primary", "lis_person_name_family", "lis_person_name_full", "lis_person_name_given", "lti_message_type", "lti_version", "oauth_callback", "resource_link_id", "resource_link_title", "roles", "selection_directive", "text", "tool_consumer_info_product_family_code", "tool_consumer_info_version", "tool_consumer_instance_contact_email", "tool_consumer_instance_guid", "tool_consumer_instance_name", "user_id", "user_image", "oauth_signature"]
-
-    passed_params = {}
-    keys.each do |i|
-      passed_params[i] = params[i] if params[i].present?
-    end
-
-    cookies['passed_params'] = passed_params.to_json if passed_params.present?
-  end
-
   def create_external_tool(base_url, course_id, key, secret, access_token, additional_params = {})
-    raise EmptyAccessToken.new if access_token.blank?
-
     tool_params = {
       privacy_level: 'public',
       consumer_key: key,
@@ -251,22 +138,35 @@ class LtiController < ApplicationController
   end
 
   def get_external_tools_list(base_url, access_token, course_id)
-    raise EmptyAccessToken.new if access_token.blank?
+    Oj.load RestClient.get("#{base_url}/api/v1/courses/#{course_id}/external_tools",
+                           oauth2_header(access_token)).body
+  end
 
-    response = RestClient.get "#{base_url}/api/v1/courses/#{course_id}/external_tools",
-                              'Authorization' => " Bearer #{access_token}"
-    Oj.load response.body
+  def delete_external_tool(base_url, id, course_id, access_token)
+    Oj.load RestClient.delete("#{base_url}/api/v1/courses/#{course_id}/external_tools/#{id}",
+                              oauth2_header(access_token)).body
   end
 
   def session_less_url_external_tool(base_url, access_token, course_id, id)
-    raise EmptyAccessToken.new if access_token.blank?
-
-    response = RestClient.get "#{base_url}/api/v1/courses/#{course_id}/external_tools/sessionless_launch?#{ {id: id}.to_query }",
-                              'Authorization' => " Bearer #{access_token}"
-    Oj.load response.body
+    Oj.load RestClient.get("#{base_url}/api/v1/courses/#{course_id}/external_tools/sessionless_launch?#{ { id: id }.to_query }",
+                           oauth2_header(access_token)).body
   end
 
   def oauth_redirect_url
     url_for(controller: :lti, action: :oauth)
+  end
+
+  def check_lti_auth(secret)
+    lti_auth = IMS::LTI::Services::MessageAuthenticator.new(request.url,
+                                                            request.request_parameters,
+                                                            secret)
+
+    raise ActionController::RoutingError.new('Not Authrorised') unless lti_auth.valid_signature?
+  end
+
+  def oauth1_signature(method, url, post_params, secret)
+    post_params = post_params.sort.map { |i| "#{i[0]}=#{i[1]}" }.join '&'
+    data = "#{method}&#{URI.encode_www_form_component url}&#{URI.encode_www_form_component post_params }"
+    Base64.encode64(OpenSSL::HMAC.digest('SHA1', secret, data)).strip()
   end
 end
