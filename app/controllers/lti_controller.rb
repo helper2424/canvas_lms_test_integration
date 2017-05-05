@@ -5,53 +5,59 @@ class LtiController < ApplicationController
 
   skip_before_action :authenticate_user!, only: [:xml, :endpoint, :add_content, :item]
 
-  OAUTH1_KEY = 'item_tool'
-  OAUTH1_SECRET = 'item_tool_secret'
+  OAUTH1_KEY_ITEM = 'item_tool'
+  OAUTH1_SECRET_ITEM = 'item_tool_secret'
+
+  OAUTH1_KEY_ADD_CONTENT = 'content'
+  OAUTH1_SECRET_ADD_CONTENT = 'content_secret'
 
   def register
-    begin
-      tc_profile = RestClient.get params['tc_profile_url']
+    tcp_url = params['tc_profile_url']
+    tcp = begin
+      Oj.load RestClient.get tcp_url
     rescue RestClient::ExceptionWithResponse => e
-      # Handle this
+      nil
     end
 
-    tool_proxy_services = Oj.load tc_profile
-    register_request = nil
+    registration_failure_redirect unless required_capabilities?(tcp)
+    tp_endpoint = tool_proxy_service_endpoint(tcp)
 
-    tool_proxy_services['service_offered'].each do |i|
-      if i['format'].include?('application/vnd.ims.lti.v2.toolproxy+json') && i['action'].include?('POST')
-        register_request = i['endpoint']
-      end
-    end
+    add_content_url = url_for(controller: :lti, action: :add_content)
+    tool_proxy = ToolProxy.new(tcp_url: tcp_url, base_url: request.base_url)
 
+    content_body = { '@context' => add_content_url }.to_json
+    headers = SimpleOAuth::Header.new(:post, tp_endpoint, {}, {
+      consumer_key: params['reg_key'],
+      oauth_body_hash: URI.encode_www_form_component(Digest::SHA1.base64digest(content_body)),
+      consumer_secret: params['reg_password']
+    })
 
-    begin
-      add_content_url = url_for(controller: :lti, action: :add_content)
-      content_body = { '@context' => add_content_url }.to_json
-      oauth_params = {
-        'realm' => '',
-        'oauth_version' => "1.0",
-        'oauth_nonce' => 'nonce',
-        'oauth_timestamp' => Time.now.to_i,
-        'oauth_consumer_key' => params['reg_key'],
-        'oauth_body_hash' => URI.encode_www_form_component(Digest::SHA1.base64digest(content_body)),
-        'oauth_signature_method' => "HMAC-SHA1"
-      }
+    pp params
+    add_content_url = url_for(controller: :lti, action: :add_content)
+    reg_result = RestClient.post tp_endpoint.to_s, content_body,
+                                 'Content-Type' => 'application/vnd.ims.lti.v2.toolproxy+json',
+                                 'Authorization' => headers.to_s
 
-      signature = oauth1_signature('POST',
-                                   register_request,
-                                   oauth_params,
-                                   params['reg_password'])
-
-      oauth_params['oauth_signature'] = URI.encode_www_form_component signature
-      oauth_header = oauth_params.map { |k, v| "#{k} = \"#{v}\"" }.join ','
-
-      reg_result = RestClient.post register_request, content_body,
-                                   'Content-Type' => 'application/vnd.ims.lti.v2.toolproxy+json',
-                                   'Authorization' => "OAuth #{oauth_header}"
-    rescue RestClient::ExceptionWithResponse => e
-      # Handle this
-    end
+    pp params
+    #
+    # tp_response = tool_proxy_request(tp_endpoint, access_token, tool_proxy)
+    #
+    # # 3. Make the tool proxy available (See section 6.1.4)
+    # #    - Check for success and redirect to the tool consumer with proper
+    # #      query parameters (See section 6.1.4 and 4.4).
+    # registration_failure_redirect unless tp_response.code == 201
+    #
+    # #    - Get the tool proxy guid from the tool proxy create response
+    # tool_proxy_guid = JSON.parse(tp_response.body)['tool_proxy_guid']
+    #
+    # #    - Get the tool consumer half of the shared split secret and construct
+    # #      the complete shared secret (See section 5.6).
+    # tc_half_shared_secret = JSON.parse(tp_response.body)['tc_half_shared_secret']
+    # shared_secret = tc_half_shared_secret + tool_proxy.tp_half_shared_secret
+    #
+    # #    - Persist the tool proxy
+    # tool_proxy.update_attributes(guid: tool_proxy_guid,
+    #                              shared_secret: shared_secret)
 
     url_params = {
       status: 'success', # or failure
@@ -62,8 +68,31 @@ class LtiController < ApplicationController
     redirect_to redirect_url
   end
 
+  def register_editor_button
+    course_id = 2
+
+    tokens = current_user.oauth_token
+    access_token = tokens.access_token
+    refresh_token = tokens.refresh_token
+
+    return unless api_call_wrapper(access_token, refresh_token) do |access_token_real|
+      create_external_tool OAUTH_BASE_URL, course_id, OAUTH1_KEY_ADD_CONTENT, OAUTH1_SECRET_ADD_CONTENT,
+                           access_token_real, additional_params = {
+          url: url_for(controller: :lti, action: :add_content),
+          name: "Ereserve_Plus",
+          editor_button: {
+            url: url_for(controller: :lti, action: :add_content),
+            enabled: true,
+            icon_url: '',
+            message_type: 'ContentItemSelectionRequest'
+          },
+        }
+    end
+  end
+
   def add_content
-    # check_lti_auth 'some'
+    #binding.pry
+    #check_lti_auth OAUTH1_SECRET_ADD_CONTENT
     authenticate_user!
     @params_inner = params.select { |k, v| not [:controller, :action].include? k.to_sym }
     @readings = [[1, 'First'], [2, 'Second'], [3, 'Third']]
@@ -85,7 +114,7 @@ class LtiController < ApplicationController
 
     unless item_tool
       return unless api_call_wrapper(access_token, refresh_token) do |access_token_real|
-        item_tool = create_external_tool OAUTH_BASE_URL, course_id, OAUTH1_KEY, OAUTH1_SECRET,
+        item_tool = create_external_tool OAUTH_BASE_URL, course_id, OAUTH1_KEY_ITEM, OAUTH1_SECRET_ITEM,
                                          access_token_real, additional_params = {
             url: launch_items_url = url_for(controller: :lti, action: :item, id: id),
             name: "Item Tool #{id}",
@@ -113,7 +142,7 @@ class LtiController < ApplicationController
   end
 
   def item
-    check_lti_auth OAUTH1_SECRET
+    check_lti_auth OAUTH1_SECRET_ITEM
     readings = Reading.find_by_uid params['id']
     @readings = JSON.parse readings.readings rescue []
   end
@@ -124,6 +153,24 @@ class LtiController < ApplicationController
   end
 
   protected
+
+  def required_capabilities?(tcp)
+    (ToolProxy::ENABLED_CAPABILITY - tcp['capability_offered']).blank?
+  end
+
+  def registration_failure_redirect
+    redirect_url = "#{params[:launch_presentation_return_url]}?status=failure"
+    redirect redirect_url
+  end
+
+  def tool_proxy_service_endpoint(tcp)
+    tp_services = tcp['service_offered'].find do |s|
+      s['format'] == [ToolProxy::TOOL_PROXY_FORMAT]
+    end
+
+    # Retrieve and return the endpoint of the ToolProxy.collection service
+    URI.parse(tp_services['endpoint']) unless tp_services.blank?
+  end
 
   def create_external_tool(base_url, course_id, key, secret, access_token, additional_params = {})
     tool_params = {
@@ -160,6 +207,8 @@ class LtiController < ApplicationController
     lti_auth = IMS::LTI::Services::MessageAuthenticator.new(request.url,
                                                             request.request_parameters,
                                                             secret)
+
+    lti_auth.valid_signature?
 
     raise ActionController::RoutingError.new('Not Authrorised') unless lti_auth.valid_signature?
   end

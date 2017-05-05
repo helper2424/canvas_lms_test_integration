@@ -2,3 +2,9 @@
   Reading <%= i %><br/>
 <% end %>
 
+
+<script type="text/javascript">
+    $(function(){
+        parent.postMessage(JSON.stringify({subject: 'lti.frameResize', height: "10px"}), '*');
+    });
+</script>

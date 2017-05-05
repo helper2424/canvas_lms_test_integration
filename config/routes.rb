@@ -16,4 +16,5 @@ Rails.application.routes.draw do
 
   get 'lti/oauth' => 'lti#oauth'
   post 'lti/send_choosen_objects'
+  get 'lti/register_editor_button'
 end

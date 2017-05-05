@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema.define(version: 20170427122203) do
+ActiveRecord::Schema.define(version: 20170504143507) do
 
   create_table "lti_keys", force: :cascade do |t|
     t.string   "key",        null: false
@@ -32,6 +32,11 @@ ActiveRecord::Schema.define(version: 20170427122203) do
     t.string   "readings",   null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+  end
+
+  create_table "tool_proxies", force: :cascade do |t|
+    t.string "tcp_url"
+    t.string "base_url"
   end
 
   create_table "user_params", force: :cascade do |t|
